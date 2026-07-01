@@ -1,0 +1,18 @@
+#!/bin/sh
+# jog-github — your day-to-day GitHub work (needs `gh` authed + `jq`).
+# Emits the jog JSON contract: review-requested PRs, your open PRs, assigned issues.
+
+command -v gh >/dev/null 2>&1 || { echo "[]"; exit 0; }
+command -v jq >/dev/null 2>&1 || { echo "[]"; exit 0; }
+gh auth status >/dev/null 2>&1 || { echo "gh not authenticated" >&2; exit 1; }
+
+limit=20
+
+{
+  gh search prs --review-requested=@me --state=open --limit "$limit" --json title,url 2>/dev/null \
+    | jq -c '.[] | {kind:"pr", title:.title, url:.url, status:"review-requested"}'
+  gh search prs --author=@me --state=open --limit "$limit" --json title,url 2>/dev/null \
+    | jq -c '.[] | {kind:"pr", title:.title, url:.url, status:"mine"}'
+  gh search issues --assignee=@me --state=open --limit "$limit" --json title,url 2>/dev/null \
+    | jq -c '.[] | {kind:"issue", title:.title, url:.url, status:"assigned"}'
+} | jq -s '.'

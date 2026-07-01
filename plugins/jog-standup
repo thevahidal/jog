@@ -1,0 +1,32 @@
+#!/bin/sh
+# jog-standup — your recent commits across all repos (git only).
+# Reads JOG_REPOS (newline-separated) and JOG_SINCE_DAYS from the environment.
+# Emits the jog JSON contract.
+
+days="${JOG_SINCE_DAYS:-7}"
+me="$(git config user.email 2>/dev/null)"
+tab="$(printf '\t')"
+
+esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\t\r\n' '   ' | tr -d '\000-\010\013\014\016-\037'; }
+out=""
+add() { if [ -n "$out" ]; then out="$out,$1"; else out="$1"; fi; }
+
+oldifs=$IFS
+IFS='
+'
+set -f
+for repo in $JOG_REPOS; do
+  [ -z "$repo" ] && continue
+  log="$(git -C "$repo" log --since="${days} days ago" ${me:+--author="$me"} --pretty="%h${tab}%s" 2>/dev/null)"
+  [ -z "$log" ] && continue
+  name="$(basename "$repo")"
+  for line in $log; do
+    [ -z "$line" ] && continue
+    hash="${line%%${tab}*}"
+    subj="${line#*${tab}}"
+    add "{\"kind\":\"commit\",\"title\":\"$(esc "$subj")\",\"note\":\"$(esc "$name @ $hash")\"}"
+  done
+done
+IFS=$oldifs
+
+printf '[%s]' "$out"

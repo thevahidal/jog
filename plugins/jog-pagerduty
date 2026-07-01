@@ -1,0 +1,20 @@
+#!/bin/sh
+# jog-pagerduty — open incidents you should know about.
+# Configure via ~/.config/jog/env:
+#   PAGERDUTY_TOKEN=<REST API key>
+#   PAGERDUTY_USER_ID=<your PD user id>   # optional — filter to incidents on you
+#   PAGERDUTY_MAX=20                      # optional
+# Emits the jog JSON contract. Prints [] (never errors) when unconfigured.
+
+[ -n "$PAGERDUTY_TOKEN" ] || { echo "[]"; exit 0; }
+command -v jq >/dev/null 2>&1 || { echo "[]"; exit 0; }
+command -v curl >/dev/null 2>&1 || { echo "[]"; exit 0; }
+
+url="https://api.pagerduty.com/incidents?statuses%5B%5D=triggered&statuses%5B%5D=acknowledged&limit=${PAGERDUTY_MAX:-20}&sort_by=created_at%3Adesc"
+[ -n "$PAGERDUTY_USER_ID" ] && url="$url&user_ids%5B%5D=$PAGERDUTY_USER_ID"
+
+curl -s -H "Authorization: Token token=$PAGERDUTY_TOKEN" \
+        -H "Accept: application/vnd.pagerduty+json;version=2" "$url" \
+  | jq -c '[ .incidents[]?
+             | {kind:"incident", title:.title, url:.html_url, status:.status, note:("#" + (.incident_number|tostring))} ]' \
+    2>/dev/null || echo "[]"

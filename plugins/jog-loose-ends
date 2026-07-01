@@ -1,0 +1,25 @@
+#!/bin/sh
+# jog-loose-ends — repos with uncommitted, unpushed, or stashed work (git only).
+# Reads JOG_REPOS from the environment. Emits the jog JSON contract.
+
+esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\t\r\n' '   ' | tr -d '\000-\010\013\014\016-\037'; }
+out=""
+add() { if [ -n "$out" ]; then out="$out,$1"; else out="$1"; fi; }
+
+oldifs=$IFS
+IFS='
+'
+set -f
+for repo in $JOG_REPOS; do
+  [ -z "$repo" ] && continue
+  name="$(basename "$repo")"
+  dirty="$(git -C "$repo" status --porcelain 2>/dev/null | grep -c .)"
+  unpushed="$(git -C "$repo" log @{upstream}..HEAD --pretty=%h 2>/dev/null | grep -c .)"
+  stash="$(git -C "$repo" stash list 2>/dev/null | grep -c .)"
+  [ "$dirty" = 0 ] && [ "$unpushed" = 0 ] && [ "$stash" = 0 ] && continue
+  note="${dirty} dirty, ${unpushed} unpushed, ${stash} stashed"
+  add "{\"kind\":\"repo\",\"title\":\"$(esc "$name")\",\"note\":\"$(esc "$note")\"}"
+done
+IFS=$oldifs
+
+printf '[%s]' "$out"

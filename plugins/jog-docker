@@ -1,0 +1,11 @@
+#!/bin/sh
+# jog-docker — your running containers (local dev context). Zero-config: works
+# whenever the Docker daemon is up. Prints [] if Docker isn't running.
+
+command -v docker >/dev/null 2>&1 || { echo "[]"; exit 0; }
+command -v jq >/dev/null 2>&1 || { echo "[]"; exit 0; }
+
+docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null \
+  | jq -R -s -c 'split("\n") | map(select(length>0)) | map(split("\t"))
+                 | map({kind:"container", title:.[0], note:.[1], status:.[2]})' \
+    2>/dev/null || echo "[]"

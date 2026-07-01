@@ -1,0 +1,19 @@
+#!/bin/sh
+# jog-linear — your active Linear issues.
+# Configure via ~/.config/jog/env:
+#   LINEAR_API_KEY=<Linear → Settings → Security & access → Personal API keys>
+# Emits the jog JSON contract. Prints [] (never errors) when unconfigured.
+
+[ -n "$LINEAR_API_KEY" ] || { echo "[]"; exit 0; }
+command -v jq >/dev/null 2>&1 || { echo "[]"; exit 0; }
+command -v curl >/dev/null 2>&1 || { echo "[]"; exit 0; }
+
+query='{"query":"query { viewer { assignedIssues(first: 20, filter: { state: { type: { nin: [\"completed\", \"canceled\"] } } }, orderBy: updatedAt) { nodes { identifier title url state { name } } } } }"}'
+
+curl -s -X POST https://api.linear.app/graphql \
+  -H "Authorization: $LINEAR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "$query" \
+  | jq -c '[ .data.viewer.assignedIssues.nodes[]?
+             | {kind:"issue", title:.title, url:.url, status:(.state.name // ""), note:.identifier} ]' \
+    2>/dev/null || echo "[]"

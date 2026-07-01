@@ -1,0 +1,30 @@
+#!/bin/sh
+# jog-gitlab — your merge requests and issues on GitLab (any instance).
+# Configure via ~/.config/jog/env:
+#   GITLAB_TOKEN=<personal access token, scope: read_api>
+#   GITLAB_URL=https://gitlab.com        # optional, for self-hosted
+#   GITLAB_MAX=20                        # optional
+# Emits the jog JSON contract. Prints [] (never errors) when unconfigured.
+
+[ -n "$GITLAB_TOKEN" ] || { echo "[]"; exit 0; }
+command -v jq >/dev/null 2>&1 || { echo "[]"; exit 0; }
+command -v curl >/dev/null 2>&1 || { echo "[]"; exit 0; }
+
+base="${GITLAB_URL:-https://gitlab.com}"
+max="${GITLAB_MAX:-20}"
+hdr="PRIVATE-TOKEN: $GITLAB_TOKEN"
+
+rev=""
+[ -n "$GITLAB_USER" ] && rev="&reviewer_username=$GITLAB_USER"
+
+{
+  curl -s -H "$hdr" "$base/api/v4/merge_requests?scope=assigned_to_me&state=opened&per_page=$max" \
+    | jq -c 'if type=="array" then .[] else empty end
+             | {kind:"mr", title:.title, url:.web_url, status:"assigned", note:(.references.full // "")}'
+  [ -n "$rev" ] && curl -s -H "$hdr" "$base/api/v4/merge_requests?state=opened&per_page=$max$rev" \
+    | jq -c 'if type=="array" then .[] else empty end
+             | {kind:"mr", title:.title, url:.web_url, status:"review", note:(.references.full // "")}'
+  curl -s -H "$hdr" "$base/api/v4/issues?scope=assigned_to_me&state=opened&per_page=$max" \
+    | jq -c 'if type=="array" then .[] else empty end
+             | {kind:"issue", title:.title, url:.web_url, status:"assigned", note:(.references.full // "")}'
+} | jq -s -c 'unique_by(.url)' 2>/dev/null || echo "[]"

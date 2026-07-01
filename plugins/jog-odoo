@@ -1,0 +1,43 @@
+#!/bin/sh
+# jog-odoo — your Odoo activities ("to-do" items assigned to you). Generic:
+# works for any Odoo instance via its JSON-RPC API.
+# Configure via ~/.config/jog/env (or your shell environment):
+#   ODOO_URL=https://erp.example.com
+#   ODOO_DB=<database name>
+#   ODOO_USER=<login / email>
+#   ODOO_PASSWORD=<password or API key>
+#   ODOO_MAX=20          # optional
+#
+# Emits the jog JSON contract. Prints [] (never errors) when unconfigured.
+
+[ -n "$ODOO_URL" ] && [ -n "$ODOO_DB" ] && [ -n "$ODOO_USER" ] && [ -n "$ODOO_PASSWORD" ] || { echo "[]"; exit 0; }
+command -v jq >/dev/null 2>&1 || { echo "[]"; exit 0; }
+command -v curl >/dev/null 2>&1 || { echo "[]"; exit 0; }
+
+max="${ODOO_MAX:-20}"
+
+# Build request bodies with jq so values are safely JSON-encoded.
+auth_body=$(jq -n --arg db "$ODOO_DB" --arg u "$ODOO_USER" --arg p "$ODOO_PASSWORD" \
+  '{jsonrpc:"2.0",method:"call",params:{service:"common",method:"authenticate",args:[$db,$u,$p,{}]}}')
+
+uid=$(curl -s "$ODOO_URL/jsonrpc" -H 'Content-Type: application/json' -d "$auth_body" | jq -r '.result // empty')
+[ -n "$uid" ] && [ "$uid" != "false" ] || { echo "[]"; exit 0; }
+
+read_body=$(jq -n --arg db "$ODOO_DB" --argjson uid "$uid" --arg p "$ODOO_PASSWORD" --argjson max "$max" \
+  '{jsonrpc:"2.0",method:"call",params:{service:"object",method:"execute_kw",args:[
+      $db,$uid,$p,"mail.activity","search_read",
+      [[["user_id","=",$uid]]],
+      {fields:["summary","res_name","res_model","res_id","date_deadline","activity_type_id"],limit:$max}
+  ]}}')
+
+curl -s "$ODOO_URL/jsonrpc" -H 'Content-Type: application/json' -d "$read_body" \
+  | jq -c --arg base "$ODOO_URL" '
+      [ (.result // [])[] | {
+          kind: "activity",
+          title: (if (.summary | type) == "string" and (.summary | length) > 0
+                  then .summary
+                  else (.activity_type_id[1] // "Activity") end),
+          note: (.res_name // ""),
+          status: (if (.date_deadline | type) == "string" then "due " + .date_deadline else "" end),
+          url: ($base + "/web#model=" + (.res_model // "") + "&id=" + ((.res_id // 0) | tostring) + "&view_type=form")
+      } ]' 2>/dev/null || echo "[]"

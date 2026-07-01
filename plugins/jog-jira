@@ -1,0 +1,32 @@
+#!/bin/sh
+# jog-jira — your open Jira issues. Generic: works for any Jira Cloud instance.
+# Configure via ~/.config/jog/env (or your shell environment):
+#   JIRA_URL=https://your-org.atlassian.net
+#   JIRA_EMAIL=you@example.com
+#   JIRA_TOKEN=<api token from https://id.atlassian.com/manage/api-tokens>
+#   JIRA_JQL=...        # optional, overrides the default query
+#   JIRA_MAX=20         # optional
+#
+# Emits the jog JSON contract. Prints [] (never errors) when unconfigured.
+
+[ -n "$JIRA_URL" ] && [ -n "$JIRA_EMAIL" ] && [ -n "$JIRA_TOKEN" ] || { echo "[]"; exit 0; }
+command -v jq >/dev/null 2>&1 || { echo "[]"; exit 0; }
+command -v curl >/dev/null 2>&1 || { echo "[]"; exit 0; }
+
+jql="${JIRA_JQL:-assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC}"
+max="${JIRA_MAX:-20}"
+
+# Jira Cloud's current enhanced search endpoint.
+curl -s -u "$JIRA_EMAIL:$JIRA_TOKEN" --get \
+  "$JIRA_URL/rest/api/3/search/jql" \
+  --data-urlencode "jql=$jql" \
+  --data-urlencode "maxResults=$max" \
+  --data-urlencode "fields=summary,status,priority" \
+  | jq -c --arg base "$JIRA_URL" '
+      [ (.issues // [])[] | {
+          kind: "ticket",
+          title: (.fields.summary // .key),
+          url: ($base + "/browse/" + .key),
+          status: (.fields.status.name // ""),
+          note: (.key + (if .fields.priority.name then " · " + .fields.priority.name else "" end))
+      } ]' 2>/dev/null || echo "[]"

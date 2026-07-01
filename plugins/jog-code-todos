@@ -1,0 +1,28 @@
+#!/bin/sh
+# jog-code-todos — TODO/FIXME/XXX markers in your repos (git grep).
+# Reads JOG_REPOS from the environment. Emits the jog JSON contract.
+# Capped per repo to keep it fast.
+
+per_repo="${JOG_CODE_TODOS_PER_REPO:-5}"
+
+esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\t\r\n' '   ' | tr -d '\000-\010\013\014\016-\037'; }
+out=""
+add() { if [ -n "$out" ]; then out="$out,$1"; else out="$1"; fi; }
+
+oldifs=$IFS
+IFS='
+'
+set -f
+for repo in $JOG_REPOS; do
+  [ -z "$repo" ] && continue
+  name="$(basename "$repo")"
+  hits="$(git -C "$repo" grep -nIE 'TODO|FIXME|XXX' 2>/dev/null | head -n "$per_repo")"
+  [ -z "$hits" ] && continue
+  for line in $hits; do
+    [ -z "$line" ] && continue
+    add "{\"kind\":\"todo\",\"title\":\"$(esc "$line")\",\"note\":\"$(esc "$name")\"}"
+  done
+done
+IFS=$oldifs
+
+printf '[%s]' "$out"
