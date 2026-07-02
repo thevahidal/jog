@@ -32,6 +32,7 @@ const usage =
     \\  jog .                    Context-aware brief for the current repo
     \\  jog <path>               Context-aware brief for a repo at <path>
     \\  jog ask "<question>"     Ask AI about your current work
+    \\  jog tidy [--apply]       AI review of your todos; --apply rewrites them (backs up)
     \\  jog dismiss              Show a numbered list of items you can hide
     \\  jog dismiss <number>     Hide the numbered item from the list
     \\  jog dismiss "<text>"     Hide anything matching <text>
@@ -45,7 +46,7 @@ const usage =
     \\  jog todo done <id>       Mark a todo done
     \\  jog todo snooze <id> <when>  Move a todo's due date
     \\  jog todo rm <id>         Remove a todo
-    \\  jog plugin new <n>       Scaffold a new plugin and register it
+    \\  jog plugin new <n>       Scaffold a new plugin (--ai "<desc>" to have AI write it)
     \\  jog plugin list          List registered plugins
     \\  jog plugin add <n> <cmd> Register an existing command as a plugin
     \\  jog plugin edit <n>      Show a plugin's script path
@@ -106,6 +107,8 @@ pub fn main(init: std.process.Init) !void {
         try cmdRemind(&ctx, rest);
     } else if (eql(cmd, "ask")) {
         try cmdAsk(&ctx, rest);
+    } else if (eql(cmd, "tidy")) {
+        try cmdTidy(&ctx, rest);
     } else if (eql(cmd, "dismiss")) {
         try cmdDismiss(&ctx, rest);
     } else if (eql(cmd, "plugin")) {
@@ -261,6 +264,28 @@ fn repoRoot(ctx: *Context, arg: []const u8) ?[]const u8 {
     return null;
 }
 
+/// Turn a free-text description into a short, safe plugin name (first ~3 words).
+fn slugify(arena: std.mem.Allocator, s: []const u8) []const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var words: u32 = 0;
+    var at_boundary = true; // suppress leading dashes
+    for (s) |c| {
+        const lc = std.ascii.toLower(c);
+        if ((lc >= 'a' and lc <= 'z') or (lc >= '0' and lc <= '9')) {
+            out.append(arena, lc) catch break;
+            at_boundary = false;
+        } else if (!at_boundary) {
+            words += 1;
+            if (words >= 3) break;
+            out.append(arena, '-') catch break;
+            at_boundary = true;
+        }
+    }
+    var res = out.items;
+    while (res.len > 0 and res[res.len - 1] == '-') res = res[0 .. res.len - 1];
+    return if (res.len == 0) "plugin" else res;
+}
+
 /// Pull the script path out of a `sh '<path>'` plugin command, if present.
 fn extractPath(command: []const u8) ?[]const u8 {
     const open = std.mem.indexOfScalar(u8, command, '\'') orelse return null;
@@ -301,6 +326,180 @@ fn cmdAsk(ctx: *Context, rest: []const [:0]const u8) !void {
     } else {
         try writeOut(ctx.io, "\n");
     }
+}
+
+/// AI cleanup of your todos. Default: advisory review (streamed, never edits).
+/// `--apply`: rewrite your todos with the cleaned list (backs up first).
+fn cmdTidy(ctx: *Context, rest: []const [:0]const u8) !void {
+    var b: Buf = .init(ctx.arena);
+    var apply = false;
+    var confirmed = false;
+    for (rest) |a| {
+        if (eql(a, "--apply") or eql(a, "apply")) apply = true;
+        if (eql(a, "--yes") or eql(a, "-y")) confirmed = true;
+    }
+
+    const todos = todo.load(ctx.arena, ctx.io, ctx.paths.todos_file);
+    var list: Buf = .init(ctx.arena);
+    var n: u32 = 0;
+    for (todos) |t| {
+        if (t.done) continue;
+        n += 1;
+        try list.printf("[{d}] {s}", .{ t.id, t.text });
+        if (t.repo.len > 0) try list.printf(" (repo: {s})", .{std.fs.path.basename(t.repo)});
+        if (t.due.len > 0) try list.printf(" (due {s})", .{t.due});
+        try list.append("\n");
+    }
+    if (n == 0) {
+        try b.append("no open todos to tidy — you're clear.\n");
+        try writeOut(ctx.io, b.items());
+        return;
+    }
+    if (!ai.available(ctx)) {
+        try b.append("AI is unavailable. Set `ai_command` in `jog config`'s file, or run `jog init`.\n");
+        try writeOut(ctx.io, b.items());
+        return;
+    }
+
+    if (!apply) {
+        const prompt = try std.fmt.allocPrint(ctx.arena,
+            \\You are my todo assistant. Today is {s}. Here is my open todo list.
+            \\Help me tidy it: call out duplicates or overlaps to merge, vague or
+            \\likely-stale items to drop, and suggest clearer wording where useful.
+            \\Be brief and concrete, referencing the [numbers]. Finish with "Do first:"
+            \\and the 2-3 that matter most today. (Run `jog tidy --apply` to apply.)
+            \\
+            \\{s}
+        , .{ dt.today(ctx.arena, ctx.io), list.items() });
+        _ = ai.stream(ctx, prompt);
+        try writeOut(ctx.io, "\n");
+        return;
+    }
+
+    // --apply: get a structured cleaned list. Conservative prompt: never invent
+    // or silently drop tasks; only merge genuine duplicates.
+    const prompt = try std.fmt.allocPrint(ctx.arena,
+        \\Tidy this todo list CONSERVATIVELY. Rules:
+        \\- Keep every distinct task. Do NOT drop anything unless it is a clear
+        \\  duplicate of another item.
+        \\- Only merge items that are truly the same task; list their ids in "from".
+        \\- You may rewrite wording to be clearer and more concise, but preserve
+        \\  each task's meaning. Do not invent new tasks.
+        \\Return ONLY a JSON array — each element
+        \\{{"text": "<cleaned todo>", "from": [<original id numbers>]}}. No prose.
+        \\
+        \\{s}
+    , .{list.items()});
+
+    const raw = ai.complete(ctx, prompt) orelse {
+        try b.append("AI is unavailable right now — no changes made.\n");
+        try writeOut(ctx.io, b.items());
+        return;
+    };
+    const json = extractJsonArray(raw) orelse {
+        try b.append("couldn't understand the AI's output — no changes made.\n");
+        try writeOut(ctx.io, b.items());
+        return;
+    };
+
+    const Item = struct { text: []const u8 = "", from: []const u32 = &.{} };
+    const items = std.json.parseFromSliceLeaky([]Item, ctx.arena, json, .{ .ignore_unknown_fields = true }) catch {
+        try b.append("the AI returned invalid JSON — no changes made.\n");
+        try writeOut(ctx.io, b.items());
+        return;
+    };
+    if (items.len == 0) {
+        try b.append("the AI returned nothing — no changes made.\n");
+        try writeOut(ctx.io, b.items());
+        return;
+    }
+
+    // Build the proposed new list: keep done todos, replace open ones with the
+    // cleaned set, inheriting repo/due/created from the first original id.
+    var final: std.ArrayList(todo.Todo) = .empty;
+    for (todos) |t| {
+        if (t.done) try final.append(ctx.arena, t);
+    }
+    for (items) |it| {
+        if (it.text.len == 0) continue;
+        var repo: []const u8 = "";
+        var due: []const u8 = "";
+        var created = dt.today(ctx.arena, ctx.io);
+        for (it.from) |fid| {
+            for (todos) |t| {
+                if (t.id == fid and !t.done) {
+                    repo = t.repo;
+                    due = t.due;
+                    created = t.created;
+                    break;
+                }
+            }
+            if (repo.len > 0 or due.len > 0) break;
+        }
+        try final.append(ctx.arena, .{
+            .id = 0,
+            .done = false,
+            .created = created,
+            .repo = repo,
+            .text = cleanText(ctx.arena, it.text),
+            .due = due,
+        });
+    }
+
+    // Which open todos would be dropped (not referenced by any item's "from")?
+    var dropped: std.ArrayList(todo.Todo) = .empty;
+    for (todos) |t| {
+        if (t.done) continue;
+        var kept = false;
+        for (items) |it| {
+            for (it.from) |fid| if (fid == t.id) {
+                kept = true;
+            };
+        }
+        if (!kept) try dropped.append(ctx.arena, t);
+    }
+
+    if (!confirmed) {
+        // Preview only — never write without --yes.
+        try b.printf("proposed: {d} open todo(s) → {d}\n\n", .{ n, items.len });
+        for (final.items) |t| {
+            if (t.done) continue;
+            try b.printf("  [{d}] {s}\n", .{ t.id, t.text });
+        }
+        if (dropped.items.len > 0) {
+            try b.printf("\n\x1b[33m⚠ would DROP {d} todo(s):\x1b[0m\n", .{dropped.items.len});
+            for (dropped.items) |t| try b.printf("  ✗ {s}\n", .{t.text});
+        }
+        try b.append("\nnothing changed. to apply:  jog tidy --apply --yes\n");
+        try writeOut(ctx.io, b.items());
+        return;
+    }
+
+    todo.backup(ctx.arena, ctx.io, ctx.paths.todos_file);
+    try todo.saveAll(ctx.arena, ctx.io, ctx.paths.dir, ctx.paths.todos_file, final.items);
+
+    try b.printf("tidied {d} todo(s) → {d}. backup: {s}.bak\n", .{ n, items.len, ctx.paths.todos_file });
+    try b.printf("  undo:  cp \"{s}.bak\" \"{s}\"\n", .{ ctx.paths.todos_file, ctx.paths.todos_file });
+    for (final.items) |t| {
+        if (t.done) continue;
+        try b.printf("  [{d}] {s}\n", .{ t.id, t.text });
+    }
+    try writeOut(ctx.io, b.items());
+}
+
+/// Slice out the first JSON array (`[` … matching `]`) from arbitrary text.
+fn extractJsonArray(s: []const u8) ?[]const u8 {
+    const open = std.mem.indexOfScalar(u8, s, '[') orelse return null;
+    const close = std.mem.lastIndexOfScalar(u8, s, ']') orelse return null;
+    if (close <= open) return null;
+    return s[open .. close + 1];
+}
+
+/// Flatten tabs/newlines so a value stays on one TSV line.
+fn cleanText(arena: std.mem.Allocator, s: []const u8) []const u8 {
+    const out = arena.alloc(u8, s.len) catch return s;
+    for (s, 0..) |c, i| out[i] = if (c == '\t' or c == '\n' or c == '\r') ' ' else c;
+    return std.mem.trim(u8, out, " ");
 }
 
 fn cmdDismiss(ctx: *Context, rest: []const [:0]const u8) !void {
@@ -539,24 +738,58 @@ fn cmdPlugin(ctx: *Context, rest: []const [:0]const u8) !void {
             for (plugins) |p| try b.printf("  {s} = {s}\n", .{ p.name, p.command });
         }
     } else if (eql(sub, "new")) {
-        if (rest.len < 2) {
-            try b.append("usage: jog plugin new <name>\n");
-        } else {
-            const name = rest[1];
-            const dest = try std.fs.path.join(ctx.arena, &.{ ctx.paths.plugins_dir, try std.fmt.allocPrint(ctx.arena, "jog-{s}", .{name}) });
-            if (std.Io.Dir.cwd().access(ctx.io, dest, .{})) |_| {
-                try b.printf("plugin '{s}' already exists at {s}\n", .{ name, dest });
-            } else |_| {
-                const body = try std.fmt.allocPrint(ctx.arena, plugin_skeleton, .{ name, name });
-                try std.Io.Dir.cwd().createDirPath(ctx.io, ctx.paths.plugins_dir);
-                try std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = dest, .data = body });
-                const key = try std.fmt.allocPrint(ctx.arena, "plugin.{s}", .{name});
-                const cmd = try std.fmt.allocPrint(ctx.arena, "sh '{s}'", .{dest});
-                try config_mod.setKey(ctx.arena, ctx.io, ctx.paths.dir, ctx.paths.config_file, key, cmd);
-                try b.printf("created plugin '{s}' and registered it.\n", .{name});
-                try b.printf("  edit:  $EDITOR {s}\n", .{dest});
-                try b.printf("  test:  jog plugin run {s}\n", .{name});
+        // Parse an optional name and an optional `--ai <description>`. The name is
+        // the first non-flag token; if omitted (e.g. `jog plugin new --ai …`) it is
+        // derived from the description.
+        var name_opt: ?[]const u8 = null;
+        var desc: []const u8 = "";
+        var i: usize = 1;
+        while (i < rest.len) : (i += 1) {
+            if (eql(rest[i], "--ai")) {
+                if (i + 1 < rest.len) desc = try std.mem.join(ctx.arena, " ", rest[i + 1 ..]);
+                break;
+            } else if (!std.mem.startsWith(u8, rest[i], "-") and name_opt == null) {
+                name_opt = rest[i];
             }
+        }
+
+        const name = name_opt orelse (if (desc.len > 0) slugify(ctx.arena, desc) else "");
+        if (name.len == 0) {
+            try b.append("usage: jog plugin new <name> [--ai \"<what it should show>\"]\n");
+            try b.append("   or: jog plugin new --ai \"<what it should show>\"   (name auto-derived)\n");
+            try writeOut(ctx.io, b.items());
+            return;
+        }
+
+        const dest = try std.fs.path.join(ctx.arena, &.{ ctx.paths.plugins_dir, try std.fmt.allocPrint(ctx.arena, "jog-{s}", .{name}) });
+        if (std.Io.Dir.cwd().access(ctx.io, dest, .{})) |_| {
+            try b.printf("plugin '{s}' already exists at {s}\n", .{ name, dest });
+        } else |_| {
+            var ai_made = false;
+            var body: []const u8 = undefined;
+            if (desc.len > 0 and ai.available(ctx)) {
+                if (ai.generatePlugin(ctx, name, desc)) |script| {
+                    body = script;
+                    ai_made = true;
+                } else {
+                    try b.append("AI couldn't generate it — writing a plain skeleton instead.\n");
+                    body = try std.fmt.allocPrint(ctx.arena, plugin_skeleton, .{ name, name });
+                }
+            } else {
+                if (desc.len > 0) try b.append("no AI command configured — writing a plain skeleton instead.\n");
+                body = try std.fmt.allocPrint(ctx.arena, plugin_skeleton, .{ name, name });
+            }
+            try std.Io.Dir.cwd().createDirPath(ctx.io, ctx.paths.plugins_dir);
+            try std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = dest, .data = body });
+            const key = try std.fmt.allocPrint(ctx.arena, "plugin.{s}", .{name});
+            const cmd = try std.fmt.allocPrint(ctx.arena, "sh '{s}'", .{dest});
+            try config_mod.setKey(ctx.arena, ctx.io, ctx.paths.dir, ctx.paths.config_file, key, cmd);
+            try b.printf("created plugin '{s}' and registered it.\n", .{name});
+            if (ai_made) {
+                try b.printf("  \x1b[2m⚠ AI-generated — review before trusting: jog plugin edit {s}\x1b[0m\n", .{name});
+            }
+            try b.printf("  edit:  $EDITOR {s}\n", .{dest});
+            try b.printf("  test:  jog plugin run {s}\n", .{name});
         }
     } else if (eql(sub, "edit")) {
         if (rest.len < 2) {

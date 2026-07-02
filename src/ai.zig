@@ -45,6 +45,72 @@ pub fn ask(ctx: *app.Context, context: []const u8, question: []const u8) ?[]cons
     return streamCommand(ctx, command, prompt);
 }
 
+pub fn available(ctx: *app.Context) bool {
+    return ctx.cfg.getOr("ai_command", "").len > 0;
+}
+
+/// Stream any prompt to the AI, live to the terminal. Returns captured text.
+pub fn stream(ctx: *app.Context, prompt: []const u8) ?[]const u8 {
+    const command = ctx.cfg.getOr("ai_command", "");
+    if (command.len == 0) return null;
+    return streamCommand(ctx, command, prompt);
+}
+
+/// Run a prompt through the AI and capture the reply *without* streaming it —
+/// for when we need to parse the output (plugin code, structured JSON).
+pub fn complete(ctx: *app.Context, prompt: []const u8) ?[]const u8 {
+    const command = ctx.cfg.getOr("ai_command", "");
+    if (command.len == 0) return null;
+
+    const ptmp = std.fs.path.join(ctx.arena, &.{ ctx.paths.dir, ".ai_prompt" }) catch return null;
+    std.Io.Dir.cwd().createDirPath(ctx.io, ctx.paths.dir) catch return null;
+    std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = ptmp, .data = prompt }) catch return null;
+
+    const full = std.fmt.allocPrint(ctx.arena, "cat '{s}' | {s}", .{ ptmp, command }) catch return null;
+    const res = std.process.run(ctx.arena, ctx.io, .{ .argv = &.{ "sh", "-c", full } }) catch return null;
+    switch (res.term) {
+        .exited => |code| if (code != 0) return null,
+        else => return null,
+    }
+    const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+    return if (out.len == 0) null else out;
+}
+
+/// Generate a plugin script from a natural-language description. Returns the
+/// script (markdown fences stripped), or null if AI is unavailable/failed.
+pub fn generatePlugin(ctx: *app.Context, name: []const u8, desc: []const u8) ?[]const u8 {
+    const prompt = std.fmt.allocPrint(ctx.arena,
+        \\Write a POSIX /bin/sh script for a "jog" plugin named "{s}".
+        \\Purpose: {s}
+        \\
+        \\Requirements:
+        \\- Print a JSON array to stdout — items with fields: kind, title, url,
+        \\  status, note (only "title" is required).
+        \\- You may use curl and jq. Read any secrets/URLs from environment
+        \\  variables and document them in a comment header (do NOT hardcode them).
+        \\- Env already provided: JOG_REPOS (newline-separated paths),
+        \\  JOG_SINCE_DAYS, JOG_TODAY.
+        \\- Always exit 0 and print at least [] on any error or missing config.
+        \\
+        \\Output ONLY the raw script. No markdown fences, no explanation.
+    , .{ name, desc }) catch return null;
+
+    const out = complete(ctx, prompt) orelse return null;
+    return stripFences(out);
+}
+
+/// Remove ``` fences the model may wrap code in.
+fn stripFences(s: []const u8) []const u8 {
+    var t = std.mem.trim(u8, s, " \t\r\n");
+    if (std.mem.startsWith(u8, t, "```")) {
+        // drop the opening fence line
+        if (std.mem.indexOfScalar(u8, t, '\n')) |nl| t = t[nl + 1 ..];
+        // drop a trailing fence
+        if (std.mem.lastIndexOf(u8, t, "```")) |close| t = t[0..close];
+    }
+    return std.mem.trim(u8, t, " \t\r\n");
+}
+
 /// Run `command` with `prompt` on stdin, streaming its stdout live to the
 /// terminal while also capturing it (via `tee`) for the return value/cache.
 fn streamCommand(ctx: *app.Context, command: []const u8, prompt: []const u8) ?[]const u8 {

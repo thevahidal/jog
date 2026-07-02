@@ -51,6 +51,26 @@ fn sectionList(ctx: *Context, override: ?[]const []const u8) []const []const u8 
     return ctx.cfg.getList("sections") orelse defaultSections(ctx);
 }
 
+const gathering_lines = [_][]const u8{
+    "🔎 rummaging through your repos…",
+    "🔎 retracing yesterday's steps…",
+    "🔎 counting uncommitted sins…",
+    "🔎 checking what you left open…",
+    "🔎 waking up your repos…",
+    "🔎 following the trail of loose ends…",
+    "🔎 tallying branches and stashes…",
+    "🔎 catching up on your git…",
+    "🔎 seeing where you drifted off…",
+};
+
+const plugin_verbs = [_][]const u8{
+    "poking", "asking", "pinging", "nudging", "consulting", "waking up", "checking in with", "shaking down",
+};
+
+fn pick(rnd: std.Random, comptime pool: []const []const u8) []const u8 {
+    return pool[rnd.intRangeLessThan(usize, 0, pool.len)];
+}
+
 /// Render the global briefing across all discovered repos.
 /// `network` selects whether plugin (network) sections may run.
 /// `sections_override`, when non-null, replaces the configured section list.
@@ -67,14 +87,17 @@ pub fn renderGlobal(ctx: *Context, network: bool, sections_override: ?[]const []
     try b.append("◆ jog — here's where you left off\n");
     try ai.printf("DEV STATUS for {s} (looking back {d} day(s)):\n", .{ dt.today(ctx.arena, ctx.io), days });
 
+    var prng = std.Random.DefaultPrng.init(@bitCast(dt.nowEpoch(ctx.io)));
+    const rnd = prng.random();
+
     for (sectionList(ctx, sections_override)) |name| {
         if (std.mem.eql(u8, name, "git")) {
-            app.note(ctx.io, "⏳ scanning repos…");
+            app.note(ctx.io, pick(rnd, &gathering_lines));
             try renderGitSection(ctx, &b, &ai, repos, dismissed, picker);
         } else if (std.mem.eql(u8, name, "todos") or std.mem.eql(u8, name, "reminders")) {
             try renderTodosSection(ctx, &b, &ai, null, dismissed);
         } else {
-            app.note(ctx.io, std.fmt.allocPrint(ctx.arena, "🔌 {s}…", .{name}) catch "🔌 plugin…");
+            app.note(ctx.io, std.fmt.allocPrint(ctx.arena, "🔌 {s} {s}…", .{ pick(rnd, &plugin_verbs), name }) catch "🔌 plugin…");
             try renderPluginSection(ctx, &b, &ai, name, repos, network, dismissed, null, picker);
         }
     }

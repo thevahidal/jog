@@ -64,6 +64,16 @@ jog                          # it now appears in your brief
 `jog plugin new` writes a working starter script (it already prints valid JSON),
 registers it, and shows you the path. Replace the demo line with your integration.
 
+### Let AI write it
+
+```sh
+jog plugin new gitlab-blocked --ai "my GitLab merge requests that are blocked"
+```
+
+With `--ai "<description>"`, jog asks your configured AI to write the whole plugin
+script from your description, then registers it. **Always review AI-generated code
+before trusting it** (`jog plugin edit <name>`) — jog flags it and reminds you.
+
 ## Registering an existing script
 
 ```sh

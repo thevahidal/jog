@@ -31,15 +31,33 @@ It does a lot out of the box, and gets more powerful as you make it yours.
 
 ---
 
-## Quick start
+## Install
 
-Requires [Zig 0.16](https://ziglang.org/).
+**macOS / Linux** — one line (downloads the right prebuilt binary):
 
 ```sh
-git clone <your-fork> ~/dev/jog && cd ~/dev/jog
-zig build                         # binary at ./zig-out/bin/jog
-cp zig-out/bin/jog ~/.local/bin/  # put it on your PATH
+curl -fsSL https://raw.githubusercontent.com/thevahidal/jog/master/install.sh | sh
+```
 
+**Windows** — run jog inside **WSL** or **Git Bash** and use the line above
+(recommended — jog uses a POSIX `sh` for git and plugins). A native binary is also
+available:
+
+```powershell
+irm https://raw.githubusercontent.com/thevahidal/jog/master/install.ps1 | iex
+```
+
+**From source** — requires [Zig 0.16](https://ziglang.org/):
+
+```sh
+git clone https://github.com/thevahidal/jog && cd jog
+zig build -Doptimize=ReleaseSafe
+cp zig-out/bin/jog ~/.local/bin/          # or anywhere on your PATH
+```
+
+Then just run:
+
+```sh
 jog                               # that's it — no config needed
 ```
 
@@ -114,6 +132,7 @@ jog .                     Context-aware AI brief for the repo you're in
 jog <path>                Context-aware AI brief for a repo at <path>
 
 jog ask "<question>"      Ask AI about your current work (streamed)
+jog tidy                  AI review of your todos (merge/drop/rephrase)
 
 jog dismiss               Show a numbered list of items you can hide
 jog dismiss <number>      Hide the numbered item
@@ -128,8 +147,10 @@ jog todo done <id>        Mark a todo done
 jog todo snooze <id> <when>  Move a todo's due date
 jog todo rm <id>          Remove a todo
 
+jog plugin new <n>        Scaffold a plugin (--ai "<desc>" to have AI write it)
 jog plugin list           List registered plugins
-jog plugin add <n> <cmd>  Register a plugin command
+jog plugin add <n> <cmd>  Register an existing command as a plugin
+jog plugin edit <n>       Show a plugin's script path
 jog plugin rm <n>         Unregister a plugin
 jog plugin run <n>        Run a plugin and print its parsed items (debug)
 
@@ -192,6 +213,9 @@ directly — it pipes a compact context to whatever command you set as `ai_comma
 - **Auto-detected** on first run: `claude -p` if it works, else `ollama run <model>`.
 - **Falls back** to the full deterministic briefing if AI is unavailable or fails.
 - **`jog ask "…"`** answers free-form questions using your live work context.
+- **`jog tidy`** has the AI review your todos — merge duplicates, drop stale ones,
+  suggest clearer wording, and tell you what to do first (advisory; it never edits
+  your todos).
 - Override per run with `--full` (no AI), `--ai` (force), `--refresh` (rebuild).
 
 To switch models, set `ai_command` in config, e.g. `ai_command = ollama run qwen2.5`.

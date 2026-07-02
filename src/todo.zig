@@ -59,6 +59,19 @@ fn save(arena: std.mem.Allocator, io: std.Io, dir: []const u8, path: []const u8,
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = b.items });
 }
 
+/// Write an explicit list of todos, reassigning ids 1..N in order. Used by tidy.
+pub fn saveAll(arena: std.mem.Allocator, io: std.Io, dir: []const u8, path: []const u8, todos: []Todo) !void {
+    for (todos, 0..) |*t, i| t.id = @intCast(i + 1);
+    try save(arena, io, dir, path, todos);
+}
+
+/// Copy the todos file to `<path>.bak` so a destructive op can be undone.
+pub fn backup(arena: std.mem.Allocator, io: std.Io, path: []const u8) void {
+    const data = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch return;
+    const bak = std.fmt.allocPrint(arena, "{s}.bak", .{path}) catch return;
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = bak, .data = data }) catch {};
+}
+
 /// Add a todo; returns its new id. `repo` "" means global; `due` "" means none.
 pub fn add(arena: std.mem.Allocator, io: std.Io, dir: []const u8, path: []const u8, repo: []const u8, text: []const u8, due: []const u8) !u32 {
     var todos: std.ArrayList(Todo) = .empty;

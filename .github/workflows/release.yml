@@ -1,0 +1,48 @@
+name: release
+
+# Publish prebuilt binaries when you push a version tag, e.g.:
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+
+      - name: Cross-compile all targets
+        run: |
+          set -eu
+          mkdir -p dist
+          # zig target  ->  release asset name
+          set -- \
+            "aarch64-macos:jog-aarch64-macos" \
+            "x86_64-macos:jog-x86_64-macos" \
+            "x86_64-linux-musl:jog-x86_64-linux" \
+            "aarch64-linux-musl:jog-aarch64-linux" \
+            "x86_64-windows:jog-x86_64-windows.exe"
+          for pair in "$@"; do
+            target="${pair%%:*}"; name="${pair##*:}"
+            echo "building $target -> $name"
+            zig build -Dtarget="$target" -Doptimize=ReleaseSafe
+            case "$name" in
+              *.exe) cp zig-out/bin/jog.exe "dist/$name" ;;
+              *)     cp zig-out/bin/jog "dist/$name" ;;
+            esac
+          done
+          ls -l dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
