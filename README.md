@@ -63,8 +63,8 @@ jog                               # that's it — no config needed
 
 On the first run jog discovers your repos, installs the bundled plugins, and
 auto-enables the ones whose tools you already have (git, plus GitHub if `gh` is
-authenticated). It also auto-detects a working AI command (`claude`, else
-`ollama`) for the summary.
+authenticated). It also auto-detects a working AI command (`claude`, then
+`gemini`, else a local `ollama` model) for the summary.
 
 Make it ambient — add to `~/.zshrc` (or `~/.bashrc`):
 
@@ -210,7 +210,9 @@ By default jog summarizes the briefing into a short, prioritized brief using a
 **local AI CLI**, streamed live. jog never stores API keys or calls an API
 directly — it pipes a compact context to whatever command you set as `ai_command`.
 
-- **Auto-detected** on first run: `claude -p` if it works, else `ollama run <model>`.
+- **Auto-detected** on first run: `claude -p`, then `gemini -p`, else `ollama run
+  <model>`. Any command that reads a prompt on stdin works (set `ai_command`
+  yourself for others, e.g. `codex exec`).
 - **Falls back** to the full deterministic briefing if AI is unavailable or fails.
 - **`jog ask "…"`** answers free-form questions using your live work context.
 - **`jog tidy`** has the AI review your todos — merge duplicates, drop stale ones,

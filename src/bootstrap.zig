@@ -137,9 +137,12 @@ pub fn install(ctx: *app.Context) Report {
     return report;
 }
 
-/// Choose a working AI command, or null if none is usable.
+/// Choose a working AI command, or null if none is usable. Tries cloud CLIs that
+/// read a prompt on stdin (claude, then gemini), then a local ollama model.
+/// (codex works too but its agentic output is noisy — set it manually if wanted.)
 fn detectAi(ctx: *app.Context) ?[]const u8 {
     if (hasCommand(ctx, "claude") and aiWorks(ctx, "claude -p")) return "claude -p";
+    if (hasCommand(ctx, "gemini") and aiWorks(ctx, "gemini -p \"\"")) return "gemini -p \"\"";
     if (hasCommand(ctx, "ollama")) {
         if (firstOllamaModel(ctx)) |model| {
             return std.fmt.allocPrint(ctx.arena, "ollama run {s}", .{model}) catch null;
