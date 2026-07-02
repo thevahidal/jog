@@ -72,3 +72,23 @@ pub fn daysFromDate(s: []const u8) ?i64 {
 pub fn weekday(days: i64) u32 {
     return @intCast(@mod(days + 4, 7));
 }
+
+const weekday_names = [_][]const u8{ "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+const month_names = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+
+/// A friendly date like "Wednesday, Jul 2".
+pub fn pretty(arena: std.mem.Allocator, io: std.Io) []const u8 {
+    const days = todayDays(io);
+    const v = ymd(days * 86400);
+    const wd = weekday_names[weekday(days)];
+    const mo = if (v.m >= 1 and v.m <= 12) month_names[v.m - 1] else "?";
+    return std.fmt.allocPrint(arena, "{s}, {s} {d}", .{ wd, mo, v.d }) catch wd;
+}
+
+/// A time-of-day greeting (UTC-based, so approximate near midnight).
+pub fn greeting(io: std.Io) []const u8 {
+    const hour = @mod(@divFloor(nowEpoch(io), 3600), 24);
+    if (hour < 12) return "good morning";
+    if (hour < 18) return "good afternoon";
+    return "good evening";
+}

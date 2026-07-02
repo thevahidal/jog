@@ -320,3 +320,5 @@ Source layout: see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **Brief seems stale** — it's cached; run `jog brief --refresh` or lower
   `cache_ttl`.
 - **A repo shows branch `HEAD`** — it's a detached checkout/worktree.
+- **Colors** — jog colorizes on a terminal and stays plain when piped. Disable with
+  `NO_COLOR=1`; force (e.g. through a pager) with `CLICOLOR_FORCE=1`.

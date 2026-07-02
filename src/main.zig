@@ -14,6 +14,7 @@ const bootstrap = @import("bootstrap.zig");
 const ai = @import("ai.zig");
 const dismiss = @import("dismiss.zig");
 const todo_when = @import("when.zig");
+const ui = @import("ui.zig");
 
 const Context = app.Context;
 const Buf = app.Buf;
@@ -79,6 +80,7 @@ pub fn main(init: std.process.Init) !void {
         .env = init.environ_map,
         .paths = paths,
         .cfg = cfg,
+        .theme = ui.Theme.init(ui.colorEnabled(init.io, init.environ_map)),
     };
 
     // First-run auto-setup: install bundled plugins and register the available
@@ -184,7 +186,8 @@ fn cmdBrief(ctx: *Context, rest: []const [:0]const u8) !void {
     }
 
     const rendered = try briefing.renderGlobal(ctx, true, override, null);
-    try emitBrief(ctx, rendered, cache_key, use_ai, "◆ jog — your brief\n\n");
+    const header = try std.fmt.allocPrint(ctx.arena, "{s}◆ jog{s} {s}· your brief{s}\n\n", .{ ctx.theme.accent_bold, ctx.theme.reset, ctx.theme.dim, ctx.theme.reset });
+    try emitBrief(ctx, rendered, cache_key, use_ai, header);
 }
 
 /// Render the deterministic brief with each dismissable item numbered, and save
@@ -234,23 +237,24 @@ fn cmdRepoBrief(ctx: *Context, repo_arg: []const u8, rest: []const [:0]const u8)
     }
 
     const rendered = try briefing.renderRepoFull(ctx, repo, true);
-    const header = try std.fmt.allocPrint(ctx.arena, "◆ {s} — your brief\n\n", .{name});
+    const header = try std.fmt.allocPrint(ctx.arena, "{s}◆ {s}{s} {s}· your brief{s}\n\n", .{ ctx.theme.accent_bold, name, ctx.theme.reset, ctx.theme.dim, ctx.theme.reset });
     try emitBrief(ctx, rendered, cache_key, use_ai, header);
 }
 
 /// Shared brief emitter: stream an AI summary (live) and cache it, or print the
 /// full deterministic view.
 fn emitBrief(ctx: *Context, rendered: briefing.Rendered, cache_key: []const u8, use_ai: bool, header: []const u8) !void {
+    const t = ctx.theme;
     if (use_ai) {
         try writeOut(ctx.io, header);
         if (ai.summarizeStream(ctx, rendered.context)) |recap| {
-            const footer = "\n\x1b[2m(add --full for details · jog ask \"…\" to dig in)\x1b[0m\n";
+            const footer = try std.fmt.allocPrint(ctx.arena, "\n{s}› add --full for details · jog ask \"…\" to dig in{s}\n", .{ t.dim, t.reset });
             try writeOut(ctx.io, footer);
             const full = try std.fmt.allocPrint(ctx.arena, "{s}{s}{s}", .{ header, recap, footer });
             ai.briefCachePut(ctx, cache_key, full);
             return;
         }
-        try writeOut(ctx.io, "\x1b[2m(AI unavailable — showing the full briefing)\x1b[0m\n");
+        try writeOut(ctx.io, try std.fmt.allocPrint(ctx.arena, "{s}AI unavailable — showing the full briefing{s}\n", .{ t.dim, t.reset }));
     }
     try writeOut(ctx.io, rendered.human);
 }
@@ -618,16 +622,26 @@ fn cmdTodo(ctx: *Context, rest: []const [:0]const u8) !void {
             if (repo_filter) |rf| {
                 if (t.repo.len != 0 and !std.mem.eql(u8, t.repo, rf)) continue;
             }
-            const mark = if (t.done) "x" else " ";
-            const scope = if (t.repo.len == 0) "" else std.fs.path.basename(t.repo);
-            const due_note = if (t.due.len > 0)
-                try std.fmt.allocPrint(ctx.arena, "  ⏰ {s}", .{todo_when.describe(ctx.arena, dt.today(ctx.arena, ctx.io), t.due)})
+            const th = ctx.theme;
+            const today = dt.today(ctx.arena, ctx.io);
+            const mark = if (t.done)
+                try std.fmt.allocPrint(ctx.arena, "{s}✓{s}", .{ th.green, th.reset })
             else
-                "";
+                try std.fmt.allocPrint(ctx.arena, "{s}▫{s}", .{ th.gray, th.reset });
+            const scope = if (t.repo.len == 0) "" else std.fs.path.basename(t.repo);
+            const due_note = if (t.due.len > 0) blk: {
+                const overdue = std.mem.order(u8, t.due, today) == .lt;
+                const col = if (t.done) th.dim else if (overdue) th.red else th.dim;
+                break :blk try std.fmt.allocPrint(ctx.arena, "  {s}⏰ {s}{s}", .{ col, todo_when.describe(ctx.arena, today, t.due), th.reset });
+            } else "";
+            const text = if (t.done)
+                try std.fmt.allocPrint(ctx.arena, "{s}{s}{s}", .{ th.dim, t.text, th.reset })
+            else
+                t.text;
             if (scope.len > 0) {
-                try b.printf("[{s}] {d}  {s}  ({s}){s}\n", .{ mark, t.id, t.text, scope, due_note });
+                try b.printf("{s} {s}{d}{s}  {s}  {s}({s}){s}{s}\n", .{ mark, th.dim, t.id, th.reset, text, th.dim, scope, th.reset, due_note });
             } else {
-                try b.printf("[{s}] {d}  {s}{s}\n", .{ mark, t.id, t.text, due_note });
+                try b.printf("{s} {s}{d}{s}  {s}{s}\n", .{ mark, th.dim, t.id, th.reset, text, due_note });
             }
             count += 1;
         }

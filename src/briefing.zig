@@ -83,8 +83,12 @@ pub fn renderGlobal(ctx: *Context, network: bool, sections_override: ?[]const []
     var b: Buf = .init(ctx.arena); // human view
     var ai: Buf = .init(ctx.arena); // compact AI context
     const dismissed = dismiss.load(ctx);
+    const t = ctx.theme;
 
-    try b.append("◆ jog — here's where you left off\n");
+    try b.printf("{s}◆ jog{s}  {s}· {s} · {s}{s}\n", .{
+        t.accent_bold, t.reset,
+        t.dim,         dt.pretty(ctx.arena, ctx.io), dt.greeting(ctx.io), t.reset,
+    });
     try ai.printf("DEV STATUS for {s} (looking back {d} day(s)):\n", .{ dt.today(ctx.arena, ctx.io), days });
 
     var prng = std.Random.DefaultPrng.init(@bitCast(dt.nowEpoch(ctx.io)));
@@ -111,18 +115,19 @@ pub fn renderGlobal(ctx: *Context, network: bool, sections_override: ?[]const []
 fn renderHint(ctx: *Context, b: *Buf) !void {
     if (!ctx.cfg.getBool("hints", true)) return;
 
+    const t = ctx.theme;
     var open_todos: u32 = 0;
-    for (todo.load(ctx.arena, ctx.io, ctx.paths.todos_file)) |t| {
-        if (!t.done) open_todos += 1;
+    for (todo.load(ctx.arena, ctx.io, ctx.paths.todos_file)) |t2| {
+        if (!t2.done) open_todos += 1;
     }
 
-    if (open_todos == 0) {
-        try b.append("\n\x1b[2m💡 track something for later:  jog todo add \"…\"\x1b[0m\n");
-    } else if (ctx.cfg.plugins().len == 0) {
-        try b.append("\n\x1b[2m💡 pull in more:  jog init  (auto-detects GitHub and more)\x1b[0m\n");
-    } else {
-        try b.append("\n\x1b[2m💡 ask jog anything:  jog ask \"what should I focus on?\"\x1b[0m\n");
-    }
+    const tip: []const u8 = if (open_todos == 0)
+        "track something for later:  jog todo add \"…\""
+    else if (ctx.cfg.plugins().len == 0)
+        "pull in more:  jog init  (auto-detects GitHub and more)"
+    else
+        "ask jog anything:  jog ask \"what should I focus on?\"";
+    try b.printf("\n{s}💡 {s}{s}\n", .{ t.dim, tip, t.reset });
 }
 
 fn renderPluginSection(ctx: *Context, b: *Buf, ai: *Buf, name: []const u8, repos: []const []const u8, network: bool, dismissed: []const []const u8, repo_match: ?[]const u8, picker: ?*Picker) !void {
@@ -140,8 +145,9 @@ fn renderPluginSection(ctx: *Context, b: *Buf, ai: *Buf, name: []const u8, repos
         .today = dt.today(ctx.arena, ctx.io),
     }, ctx.paths.env_file);
 
+    const t = ctx.theme;
     if (res.err) |e| {
-        try b.printf("\n▌ {s} — unavailable ({s})\n", .{ name, e });
+        try b.printf("\n{s}▌{s} {s}{s}{s}  {s}unavailable — {s}{s}\n", .{ t.gray, t.reset, t.bold, name, t.reset, t.dim, e, t.reset });
         return;
     }
 
@@ -162,7 +168,7 @@ fn renderPluginSection(ctx: *Context, b: *Buf, ai: *Buf, name: []const u8, repos
     const max_key = try std.fmt.allocPrint(ctx.arena, "{s}.max", .{name});
     const max = ctx.cfg.getInt(max_key, 10);
 
-    try b.printf("\n▌ {s} ({d})\n", .{ name, items.items.len });
+    try sectionHeader(b, t, name, try std.fmt.allocPrint(ctx.arena, "{d}", .{items.items.len}));
     try ai.printf("\n{s} ({d} items):\n", .{ name, items.items.len });
     for (items.items, 0..) |it, idx| {
         // AI context: cap to a focused handful per section.
@@ -173,20 +179,36 @@ fn renderPluginSection(ctx: *Context, b: *Buf, ai: *Buf, name: []const u8, repos
             try ai.append("\n");
         }
         if (idx >= max) {
-            try b.printf("  … and {d} more\n", .{items.items.len - idx});
+            try b.printf("    {s}… and {d} more{s}\n", .{ t.dim, items.items.len - idx, t.reset });
             break;
         }
         if (picker) |pk| {
             const pat = if (it.url.len > 0) it.url else it.title;
-            try b.printf("  [{d}] {s}", .{ pk.add(pat, it.title), it.title });
+            try b.printf("  {s}{d}{s} {s}", .{ t.accent, pk.add(pat, it.title), t.reset, it.title });
         } else {
-            try b.printf("  • {s}", .{it.title});
+            try b.printf("  {s}•{s} {s}", .{ t.accent, t.reset, it.title });
         }
-        if (it.status.len > 0) try b.printf("  [{s}]", .{it.status});
+        if (it.status.len > 0)
+            try b.printf("  {s}[{s}{s}{s}{s}]{s}", .{ t.dim, t.reset, statusColor(t, it.status), it.status, t.dim, t.reset });
         try b.append("\n");
-        if (it.note.len > 0) try b.printf("    {s}\n", .{it.note});
-        if (it.url.len > 0) try b.printf("    {s}\n", .{it.url});
+        if (it.note.len > 0) try b.printf("    {s}{s}{s}\n", .{ t.dim, it.note, t.reset });
+        if (it.url.len > 0) try b.printf("    {s}{s}{s}\n", .{ t.blue, it.url, t.reset });
     }
+}
+
+/// Colorize a plugin status label by sentiment.
+fn statusColor(t: anytype, status: []const u8) []const u8 {
+    if (containsAnyIC(status, &.{ "fail", "block", "changes", "error", "overdue", "triggered" })) return t.red;
+    if (containsAnyIC(status, &.{ "review", "pending", "wait", "progress", "acknowledged" })) return t.yellow;
+    if (containsAnyIC(status, &.{ "done", "merged", "approved", "resolved", "ready" })) return t.green;
+    return t.dim;
+}
+
+fn containsAnyIC(hay: []const u8, needles: []const []const u8) bool {
+    for (needles) |n| {
+        if (std.ascii.indexOfIgnoreCase(hay, n) != null) return true;
+    }
+    return false;
 }
 
 /// Render a single repo's briefing (used by the on-cd hook). Git + todos only.
@@ -197,8 +219,8 @@ pub fn renderRepo(ctx: *Context, repo: []const u8) ![]const u8 {
     const max_commits = ctx.cfg.getInt("git.max_commits", 5);
     const f = git.facts(ctx.arena, ctx.io, repo, days, max_commits);
 
-    try b.printf("◆ {s}", .{f.name});
-    if (f.branch.len > 0) try b.printf("  ({s})", .{f.branch});
+    try b.printf("{s}◆ {s}{s}", .{ ctx.theme.accent_bold, f.name, ctx.theme.reset });
+    if (f.branch.len > 0) try b.printf("  {s}{s}{s}", .{ ctx.theme.dim, f.branch, ctx.theme.reset });
     try b.append("\n");
     try renderRepoFacts(ctx, &b, f, "  ");
     try renderTodosSection(ctx, &b, &ai, repo, dismiss.load(ctx));
@@ -218,8 +240,8 @@ pub fn renderRepoFull(ctx: *Context, repo: []const u8, network: bool) !Rendered 
     var b: Buf = .init(ctx.arena);
     var ai: Buf = .init(ctx.arena);
 
-    try b.printf("◆ {s}", .{f.name});
-    if (f.branch.len > 0) try b.printf("  ({s})", .{f.branch});
+    try b.printf("{s}◆ {s}{s}", .{ ctx.theme.accent_bold, f.name, ctx.theme.reset });
+    if (f.branch.len > 0) try b.printf("  {s}{s}{s}", .{ ctx.theme.dim, f.branch, ctx.theme.reset });
     try b.append("\n");
     try renderRepoFacts(ctx, &b, f, "  ");
 
@@ -267,7 +289,8 @@ fn renderTodosSection(ctx: *Context, b: *Buf, ai: *Buf, repo_filter: ?[]const u8
 
     std.mem.sort(todo.Todo, items.items, {}, lessThanTodo);
 
-    try b.printf("\n▌ todos ({d})\n", .{items.items.len});
+    const th = ctx.theme;
+    try sectionHeader(b, th, "todos", try std.fmt.allocPrint(ctx.arena, "{d}", .{items.items.len}));
     try ai.printf("\nTODOS ({d}) — dated ones are time-sensitive, surface them first:\n", .{items.items.len});
     var shown: u32 = 0;
     for (items.items) |t| {
@@ -283,22 +306,24 @@ fn renderTodosSection(ctx: *Context, b: *Buf, ai: *Buf, repo_filter: ?[]const u8
         try ai.append("\n");
 
         if (shown >= max) {
-            try b.printf("  … and {d} more\n", .{items.items.len - shown});
+            try b.printf("    {s}… and {d} more{s}\n", .{ th.dim, items.items.len - shown, th.reset });
             break;
         }
 
-        // Human line: dated todos get an urgency marker + relative day.
+        // Human line: dated todos get a colored urgency marker + relative day.
         if (t.due.len > 0) {
             const overdue = std.mem.order(u8, t.due, today) == .lt;
             const due_today = std.mem.eql(u8, t.due, today);
             const icon = if (overdue) "⚠" else if (due_today) "●" else "○";
-            try b.printf("  {s} [{d}] {s}  \x1b[2m— {s}", .{ icon, t.id, t.text, when.describe(ctx.arena, today, t.due) });
+            const col = if (overdue) th.red else if (due_today) th.green else th.gray;
+            try b.printf("  {s}{s}{s} {s}{d}{s} {s}  {s}— {s}", .{ col, icon, th.reset, th.dim, t.id, th.reset, t.text, th.dim, when.describe(ctx.arena, today, t.due) });
             if (scope.len > 0) try b.printf(" · {s}", .{scope});
-            try b.append("\x1b[0m\n");
-        } else if (scope.len > 0) {
-            try b.printf("  ▫ [{d}] {s}  \x1b[2m· {s}\x1b[0m\n", .{ t.id, t.text, scope });
+            try b.append(th.reset);
+            try b.append("\n");
         } else {
-            try b.printf("  ▫ [{d}] {s}\n", .{ t.id, t.text });
+            try b.printf("  {s}▫{s} {s}{d}{s} {s}", .{ th.gray, th.reset, th.dim, t.id, th.reset, t.text });
+            if (scope.len > 0) try b.printf("  {s}· {s}{s}", .{ th.dim, scope, th.reset });
+            try b.append("\n");
         }
         shown += 1;
     }
@@ -325,19 +350,20 @@ fn renderGitSection(ctx: *Context, b: *Buf, ai: *Buf, repos: []const []const u8,
         try active.append(ctx.arena, f);
     }
 
-    try b.printf("\n▌ git — {d} active repo(s) in the last {d} day(s)\n", .{ active.items.len, days });
+    const t = ctx.theme;
+    try sectionHeader(b, t, "git", try std.fmt.allocPrint(ctx.arena, "{d} active · {d}d", .{ active.items.len, days }));
     try ai.printf("\nGIT ({d} active repos):\n", .{active.items.len});
     if (active.items.len == 0) {
-        try b.append("  (nothing recent)\n");
+        try b.printf("  {s}nothing recent{s}\n", .{ t.dim, t.reset });
         return;
     }
     for (active.items) |f| {
         if (picker) |pk| {
-            try b.printf("\n  [{d}] {s}", .{ pk.add(f.name, f.name), f.name });
+            try b.printf("\n  {s}{d}{s} {s}{s}{s}{s}", .{ t.accent, pk.add(f.name, f.name), t.reset, t.bold, t.cyan, f.name, t.reset });
         } else {
-            try b.printf("\n  {s}", .{f.name});
+            try b.printf("\n  {s}{s}{s}{s}", .{ t.bold, t.cyan, f.name, t.reset });
         }
-        if (f.branch.len > 0) try b.printf("  ({s})", .{f.branch});
+        if (f.branch.len > 0) try b.printf("  {s}{s}{s}", .{ t.dim, f.branch, t.reset });
         try b.append("\n");
         try renderRepoFacts(ctx, b, f, "    ");
 
@@ -359,17 +385,27 @@ fn renderGitSection(ctx: *Context, b: *Buf, ai: *Buf, repos: []const []const u8,
 
 fn renderRepoFacts(ctx: *Context, b: *Buf, f: git.RepoFacts, indent: []const u8) !void {
     const show = ctx.cfg.getOr("git.show", "branch,commits,dirty,unpushed,stash");
+    const t = ctx.theme;
 
     if (contains(show, "dirty") and f.dirty > 0)
-        try b.printf("{s}● {d} uncommitted change(s)\n", .{ indent, f.dirty });
+        try b.printf("{s}{s}●{s} {d} uncommitted\n", .{ indent, t.red, t.reset, f.dirty });
     if (contains(show, "unpushed") and f.unpushed > 0)
-        try b.printf("{s}↑ {d} unpushed commit(s)\n", .{ indent, f.unpushed });
+        try b.printf("{s}{s}↑{s} {d} unpushed\n", .{ indent, t.yellow, t.reset, f.unpushed });
     if (contains(show, "stash") and f.stashes > 0)
-        try b.printf("{s}≡ {d} stash(es)\n", .{ indent, f.stashes });
+        try b.printf("{s}{s}≡{s} {d} stashed\n", .{ indent, t.magenta, t.reset, f.stashes });
     if (contains(show, "commits") and f.commits.len > 0) {
-        try b.printf("{s}recent commits:\n", .{indent});
-        for (f.commits) |c| try b.printf("{s}  {s}\n", .{ indent, c });
+        for (f.commits) |c| {
+            // "hash subject" → dim the hash, normal subject.
+            const sp = std.mem.indexOfScalar(u8, c, ' ') orelse c.len;
+            try b.printf("{s}{s}{s}{s} {s}\n", .{ indent, t.gray, c[0..sp], t.reset, if (sp < c.len) c[sp + 1 ..] else "" });
+        }
     }
+}
+
+fn sectionHeader(b: *Buf, t: anytype, name: []const u8, meta: []const u8) !void {
+    try b.printf("\n{s}▌{s} {s}{s}{s}", .{ t.accent, t.reset, t.bold, name, t.reset });
+    if (meta.len > 0) try b.printf("  {s}{s}{s}", .{ t.dim, meta, t.reset });
+    try b.append("\n");
 }
 
 fn contains(haystack: []const u8, needle: []const u8) bool {

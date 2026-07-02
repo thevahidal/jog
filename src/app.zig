@@ -3,6 +3,7 @@
 const std = @import("std");
 const config_mod = @import("config.zig");
 const paths_mod = @import("paths.zig");
+const ui = @import("ui.zig");
 
 pub const Context = struct {
     arena: std.mem.Allocator,
@@ -11,6 +12,7 @@ pub const Context = struct {
     env: *std.process.Environ.Map,
     paths: paths_mod.Paths,
     cfg: config_mod.Config,
+    theme: ui.Theme = .{},
 };
 
 /// Small growable string builder over an arena, used to assemble output before a
